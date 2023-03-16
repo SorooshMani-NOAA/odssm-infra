@@ -21,8 +21,9 @@ from tasks.params import (
         param_mesh_hmin_low, param_mesh_rate_low,
         param_mesh_trans_elev,
         param_mesh_hmin_high, param_mesh_rate_high,
-        param_ensemble_n_perturb, param_ensemble_hr_prelandfall,
-        param_ensemble_sample_rule
+        param_ensemble_n_perturb, param_hr_prelandfall,
+        param_ensemble_sample_rule,
+        param_past_forecast,
         )
 from tasks.data import (
         task_copy_s3_data, 
@@ -114,7 +115,10 @@ def _make_workflow():
                 rdhpcs_post=param_use_rdhpcs_post,
                 run_id=result_flow_run_id,
                 parametric_wind=param_use_parametric_wind,
-                ensemble=param_ensemble)
+                ensemble=param_ensemble,
+                hr_before_landfall=param_hr_prelandfall,
+                past_forecast=param_past_forecast,
+                )
 
         result_bundle_params_2 = task_bundle_params(
                 name=param_storm_name,
@@ -137,7 +141,7 @@ def _make_workflow():
                 parametric_wind=param_use_parametric_wind,
                 ensemble=param_ensemble,
                 ensemble_num_perturbations=param_ensemble_n_perturb,
-                ensemble_hr_before_landfall=param_ensemble_hr_prelandfall,
+                hr_before_landfall=param_hr_prelandfall,
                 ensemble_sample_rule=param_ensemble_sample_rule,
         )
 

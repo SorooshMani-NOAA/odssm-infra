@@ -487,7 +487,7 @@ resource "aws_ecs_task_definition" "odssm-info-task" {
     container_definitions = jsonencode([
       {
         name = "info"
-        image = "${aws_ecr_repository.odssm-repo["odssm-info"].repository_url}:v0.9"
+        image = "${aws_ecr_repository.odssm-repo["odssm-info"].repository_url}:v0.10"
 
         essential = true
 

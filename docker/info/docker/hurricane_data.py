@@ -10,6 +10,7 @@ import sys
 import logging
 import pathlib
 import argparse
+import tempfile
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -33,29 +34,34 @@ EFS_MOUNT_POINT = pathlib.Path('~').expanduser() / f'app/io/output'
 
 def main(args):
 
-    name = args.name
+    name_or_code = args.name_or_code
     year = args.year
     date_out = EFS_MOUNT_POINT / args.date_range_outpath
     track_out = EFS_MOUNT_POINT / args.track_outpath
     swath_out = EFS_MOUNT_POINT / args.swath_outpath
     sta_dat_out = EFS_MOUNT_POINT / args.station_data_outpath
     sta_loc_out = EFS_MOUNT_POINT / args.station_location_outpath
+    is_past_forecast = args.past_forecast
+    hr_before_landfall = args.hours_before_landfall
+
+    if is_past_forecast and hr_before_landfall < 0:
+        hr_before_landfall = 48
+
+    ne_low = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    shp_US = ne_low[ne_low.name.isin(['United States of America', 'Puerto Rico'])].unary_union
 
     logger.info("Fetching hurricane info...")
     event = None
-    # TODO: Use proper parameters. For now this is a quick hack to test
     if year == 0:
-        event = StormEvent.from_nhc_code(name)
+        event = StormEvent.from_nhc_code(name_or_code)
     else:
-        event = StormEvent(name, year)
+        event = StormEvent(name_or_code, year)
+    nhc_code = event.nhc_code
     logger.info("Fetching a-deck track info...")
 
     # TODO: Get user input for whether its forecast or now!
-    is_forecast = False
     now = datetime.now()
-    if now - event.start_date < timedelta(days=30):
-        is_forecast = True
-
+    if (is_past_forecast or (now - event.start_date < timedelta(days=30))):
         temp_track = event.track(file_deck='a')
         adv_avail = temp_track.unfiltered_data.advisory.unique()
         adv_order = ['OFCL', 'HWRF', 'HMON', 'CARQ']
@@ -65,35 +71,72 @@ def main(args):
                 advisory = adv
                 break
 
-        # NOTE: Track taken from StormEvent object is up to now only.
+        if advisory == "OFCL" and "CARQ" not in adv_avail:
+            raise ValueError(
+                "OFCL advisory needs CARQ for fixing missing variables!"
+            )
+
+        # NOTE: Track taken from `StormEvent` object is up to now only.
         # See GitHub issue #57 for StormEvents
-        #
-        # TODO: Use proper parameters. For now this is a quick hack to test
-        if year == 0:
-            track = VortexTrack(
-                name, file_deck='a', advisories=[advisory]
-            )
-        else:
-            track = VortexTrack.from_storm_name(
-                name, year, file_deck='a', advisories=[advisory]
-            )
+        track = VortexTrack(nhc_code, file_deck='a', advisories=[advisory])
         windswath_dict = track.wind_swaths(wind_speed=34)
+        windswaths = windswath_dict[advisory]
 
         df_dt = pd.DataFrame(columns=['date_time'])
-        # Put both dates as now(), for pyschism to setup forecast
-        df_dt['date_time'] = (now, now)
 
-        logger.info(f"Fetching {advisory} windswath...")
-        windswaths = windswath_dict[advisory]
-        latest_advistory_stamp = max(pd.to_datetime(list(windswaths.keys())))
-        windswath = windswaths[
-            latest_advistory_stamp.strftime("%Y%m%dT%H%M%S")
-        ]
-        
-        coops_ssh = None
+        if is_past_forecast:
+
+            logger.info(
+                f"Creating {advisory} track for {hr_before_landfall}"
+                +" hours before landfall forecast..."
+            )
+            onland_adv_tracks = track.data[track.data.intersects(shp_US)]
+            candidates = onland_adv_tracks.groupby('track_start_time').nth(0).reset_index()
+            candidates['timediff'] = candidates.datetime - candidates.track_start_time
+            track_start = candidates[
+                candidates['timediff'] >= timedelta(hours=hr_before_landfall)
+            ].track_start_time.iloc[-1]
+
+            gdf_track = track.data[track.data.track_start_time == track_start]
+            df_dt['date_time'] = (track.start_date, track.end_date)
+
+            logger.info(f"Fetching {advisory} windswath...")
+            windswath = windswaths[
+                track_start.strftime("%Y%m%dT%H%M%S")
+            ]
+
+            logger.info("Fetching water level measurements from COOPS stations...")
+            coops_ssh = event.coops_product_within_isotach(
+                product='water_level', wind_speed=34,
+                datum=COOPS_TidalDatum.NAVD,
+                units=COOPS_Units.METRIC,
+                time_zone=COOPS_TimeZone.GMT,
+            )
+
+        else:
+            # Get the latest track forecast
+            track_start = track.data.track_start_time.max()
+            gdf_track = track.data[track.data.track_start_time == track_start]
+
+            # Put both dates as now(), for pyschism to setup forecast
+            df_dt['date_time'] = (now, now)
+
+            logger.info(f"Fetching {advisory} windswath...")
+            latest_advistory_stamp = max(pd.to_datetime(list(windswaths.keys())))
+            windswath = windswaths[
+                latest_advistory_stamp.strftime("%Y%m%dT%H%M%S")
+            ]
+                
+            coops_ssh = None
+
+        # NOTE: Fake besttrack: Since PySCHISM supports "BEST" track
+        # files for its parametric forcing, write track as "BEST" after
+        # fixing the OFCL by CARQ through StormEvents
+        gdf_track.advisory = 'BEST'
+        gdf_track.forecast_hours = 0
+        track = VortexTrack(storm=gdf_track, file_deck='b', advisories=['BEST'])
 
     else:
-        is_forecast = False
 
         logger.info("Fetching b-deck track info...")
 
@@ -139,7 +182,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "name", help="name of the storm", type=str)
+        "name_or_code", help="name or NHC code of the storm", type=str)
     parser.add_argument(
         "year", help="year of the storm", type=int)
 
@@ -176,6 +219,18 @@ if __name__ == '__main__':
         help="output station location",
         type=pathlib.Path,
         required=True
+    )
+
+    parser.add_argument(
+        "--past-forecast",
+        help="Get forecast data for a past storm",
+        action='store_true',
+    )
+
+    parser.add_argument(
+        "--hours-before-landfall",
+        help="Get forecast data for a past storm at this many hour before landfall",
+        type=int,
     )
 
     args = parser.parse_args()

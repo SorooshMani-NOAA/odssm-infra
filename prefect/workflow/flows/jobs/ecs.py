@@ -22,8 +22,9 @@ from tasks.params import (
     param_mesh_hmin_low, param_mesh_rate_low,
     param_mesh_trans_elev,
     param_mesh_hmin_high, param_mesh_rate_high,
-    param_ensemble_n_perturb, param_ensemble_hr_prelandfall,
-    param_ensemble_sample_rule
+    param_ensemble_n_perturb, param_hr_prelandfall,
+    param_ensemble_sample_rule,
+    param_past_forecast,
 )
 from tasks.infra import ContainerInstance, task_add_ecs_attribute_for_ec2
 from tasks.jobs import (
@@ -50,50 +51,31 @@ from flows.utils import LocalAWSFlow, flow_dependency, task_create_ecsrun_config
 
 
 
-def _use_if_subset_equals(is_true, argument):
+def _use_if(param, is_true, value):
     if is_true:
-        return lambda: task_return_value_if_param_true(
-                param=param_subset_mesh,
-                value=argument)
-    return lambda: task_return_value_if_param_false(
-            param=param_subset_mesh,
-            value=argument)
+        task = task_return_value_if_param_true
+    else:
+        task = task_return_value_if_param_false
 
-def _fill_in_tag(template):
+    return lambda: task(param=param, value=value)
+
+
+def _tag(template):
     return lambda: task_replace_tag_in_template(
             storm_name=param_storm_name,
             storm_year=param_storm_year,
             run_id=param_run_id,
             template_str=str(template))
 
-def _use_if_ensemble_equals(is_true, conditional_arg):
-    if is_true:
-        return lambda: task_return_value_if_param_true(
-                    param=param_ensemble,
-                    value=conditional_arg
-                )
-    return lambda: task_return_value_if_param_false(
-                param=param_ensemble,
-                value=conditional_arg
-            )
 
-def _use_if_paramwind_true_ensemble_false(conditional_arg):
-    return lambda: task_return_value_if_param_true(
-                param=param_use_parametric_wind,
-                value=task_return_value_if_param_false(
-                    param=param_ensemble,
-                    value=conditional_arg
-                )
-            )
-
-def _fill_in_n_use_if_ensemble_equals(is_true, template):
+def _tag_n_use_if(param, is_true, template):
     if is_true:
         task = task_return_value_if_param_true
     else:
         task = task_return_value_if_param_false
 
     return lambda: task(
-                param=param_ensemble,
+                param=param,
                 value=task_replace_tag_in_template(
                     storm_name=param_storm_name,
                     storm_year=param_storm_year,
@@ -103,11 +85,47 @@ def _fill_in_n_use_if_ensemble_equals(is_true, template):
             )
 
 
-def _fill_in_n_use_if_paramwind_true_ensemble_false(template):
-    return lambda: task_return_value_if_param_true(
-                param=param_use_parametric_wind,
-                value=task_return_value_if_param_false(
-                    param=param_ensemble,
+def _use_if_and(*and_conds, value=None):
+    assert value is not None
+    assert len(and_conds) % 2 == 0
+    tasks_args = []
+    conds_iter = iter(and_conds)
+    for par, is_true in zip(conds_iter, conds_iter):
+        if is_true:
+            tasks_args.append((task_return_value_if_param_true, par))
+        else:
+            tasks_args.append((task_return_value_if_param_false, par))
+
+    def _call_task(remains):
+        assert len(remains) > 0
+        task_arg = remains[0]
+        if len(remains) == 1:
+            return task_arg[0](param=task_arg[1], value=value)
+        return task_arg[0](param=task_arg[1], value=_call_task(remains[1:]))
+
+    def _task_recurse():
+        return _call_task(tasks_args)
+
+    return _task_recurse
+
+
+def _tag_n_use_if_and(*and_conds, template=None):
+    assert template is not None
+    assert len(and_conds) % 2 == 0
+    tasks_args = []
+    conds_iter = iter(and_conds)
+    for par, is_true in zip(conds_iter, conds_iter):
+        if is_true:
+            tasks_args.append((task_return_value_if_param_true, par))
+        else:
+            tasks_args.append((task_return_value_if_param_false, par))
+
+    def _call_task(remains):
+        assert len(remains) > 0
+        task_arg = remains[0]
+        if len(remains) == 1:
+            return task_arg[0](
+                    param=task_arg[1],
                     value=task_replace_tag_in_template(
                         storm_name=param_storm_name,
                         storm_year=param_storm_year,
@@ -115,25 +133,12 @@ def _fill_in_n_use_if_paramwind_true_ensemble_false(template):
                         template_str=str(template)
                     )
                 )
-            )
+        return task_arg[0](param=task_arg[1], value=_call_task(remains[1:]))
 
+    def _task_recurse():
+        return _call_task(tasks_args)
 
-
-def _fill_in_n_use_if_subset_equals(is_true, template):
-    if is_true:
-        task = task_return_value_if_param_true
-    else:
-        task = task_return_value_if_param_false
-
-    return lambda: task(
-                param=param_subset_mesh,
-                value=task_replace_tag_in_template(
-                    storm_name=param_storm_name,
-                    storm_year=param_storm_year,
-                    run_id=param_run_id,
-                    template_str=str(template)
-                )
-            )
+    return _task_recurse
 
 
 info_flow_ecs_task_details = {
@@ -141,15 +146,18 @@ info_flow_ecs_task_details = {
         OCSMESH_CLUSTER, OCSMESH_TEMPLATE_2_ID, "odssm-info", "info",
         [
             '--date-range-outpath',
-            _fill_in_tag('{tag}/setup/dates.csv'),
+            _tag('{tag}/setup/dates.csv'),
             '--track-outpath',
-            _fill_in_tag('{tag}/nhc_track/hurricane-track.dat'),
+            _tag('{tag}/nhc_track/hurricane-track.dat'),
             '--swath-outpath',
-            _fill_in_tag('{tag}/windswath'),
+            _tag('{tag}/windswath'),
             '--station-data-outpath',
-            _fill_in_tag('{tag}/coops_ssh/stations.nc'),
+            _tag('{tag}/coops_ssh/stations.nc'),
             '--station-location-outpath',
-            _fill_in_tag('{tag}/setup/stations.csv'),
+            _tag('{tag}/setup/stations.csv'),
+            _use_if(param_past_forecast, True, '--past-forecast'),
+            _use_if(param_past_forecast, True, "--hours-before-landfall"),
+            _use_if(param_past_forecast, True, param_hr_prelandfall),
             param_storm_name, param_storm_year,
         ],
         "hurricane info",
@@ -159,96 +167,103 @@ info_flow_ecs_task_details = {
             param_storm_name, param_storm_year,
             "--rasters-dir", 'dem',
             # If subsetting flag is False
-            _use_if_subset_equals(False, "hurricane_mesh"),
-            _use_if_subset_equals(False, "--hmax"),
-            _use_if_subset_equals(False, param_mesh_hmax),
-            _use_if_subset_equals(False, "--hmin-low"),
-            _use_if_subset_equals(False, param_mesh_hmin_low),
-            _use_if_subset_equals(False, "--rate-low"),
-            _use_if_subset_equals(False, param_mesh_rate_low),
-            _use_if_subset_equals(False, "--transition-elev"),
-            _use_if_subset_equals(False, param_mesh_trans_elev),
-            _use_if_subset_equals(False, "--hmin-high"),
-            _use_if_subset_equals(False, param_mesh_hmin_high),
-            _use_if_subset_equals(False, "--rate-high"),
-            _use_if_subset_equals(False, param_mesh_rate_high),
-            _use_if_subset_equals(False, "--shapes-dir"),
-            _use_if_subset_equals(False, 'shape'),
-            _use_if_subset_equals(False, "--windswath"),
-            _fill_in_n_use_if_subset_equals(
-                False, 'hurricanes/{tag}/windswath'
+            _use_if(param_subset_mesh, False, "hurricane_mesh"),
+            _use_if(param_subset_mesh, False, "--hmax"),
+            _use_if(param_subset_mesh, False, param_mesh_hmax),
+            _use_if(param_subset_mesh, False, "--hmin-low"),
+            _use_if(param_subset_mesh, False, param_mesh_hmin_low),
+            _use_if(param_subset_mesh, False, "--rate-low"),
+            _use_if(param_subset_mesh, False, param_mesh_rate_low),
+            _use_if(param_subset_mesh, False, "--transition-elev"),
+            _use_if(param_subset_mesh, False, param_mesh_trans_elev),
+            _use_if(param_subset_mesh, False, "--hmin-high"),
+            _use_if(param_subset_mesh, False, param_mesh_hmin_high),
+            _use_if(param_subset_mesh, False, "--rate-high"),
+            _use_if(param_subset_mesh, False, param_mesh_rate_high),
+            _use_if(param_subset_mesh, False, "--shapes-dir"),
+            _use_if(param_subset_mesh, False, 'shape'),
+            _use_if(param_subset_mesh, False, "--windswath"),
+            _tag_n_use_if(
+                param_subset_mesh, False, 'hurricanes/{tag}/windswath'
             ),
             # If subsetting flag is True
-            _use_if_subset_equals(True, "subset_n_combine"),
-            _use_if_subset_equals(True, 'grid/HSOFS_250m_v1.0_fixed.14'),
-            _use_if_subset_equals(True, 'grid/WNAT_1km.14'),
-            _fill_in_n_use_if_subset_equals(
-                True, 'hurricanes/{tag}/windswath'
+            _use_if(param_subset_mesh, True, "subset_n_combine"),
+            _use_if(param_subset_mesh, True, 'grid/HSOFS_250m_v1.0_fixed.14'),
+            _use_if(param_subset_mesh, True, 'grid/WNAT_1km.14'),
+            _tag_n_use_if(
+                param_subset_mesh, True, 'hurricanes/{tag}/windswath'
             ),
             # Other shared options
-            "--out", _fill_in_tag('hurricanes/{tag}/mesh'),
+            "--out", _tag('hurricanes/{tag}/mesh'),
         ],
         "meshing",
         60, 180, []),
     "sim-prep-setup-aws": ECSTaskDetail(
         OCSMESH_CLUSTER, OCSMESH_TEMPLATE_2_ID, "odssm-prep", "prep", [
             # Command and arguments for deterministic run
-            _use_if_ensemble_equals(False, "setup_model"),
-            _use_if_paramwind_true_ensemble_false("--parametric-wind"),
-            _use_if_ensemble_equals(False, "--mesh-file"),
-            _fill_in_n_use_if_ensemble_equals(
-                False, 'hurricanes/{tag}/mesh/mesh_w_bdry.grd'
+            _use_if(param_ensemble, False, "setup_model"),
+            _use_if_and(
+                param_use_parametric_wind, True, param_ensemble, False,
+                value="--parametric-wind"
             ),
-            _use_if_ensemble_equals(False, "--domain-bbox-file"),
-            _fill_in_n_use_if_ensemble_equals(
-                False, 'hurricanes/{tag}/mesh/domain_box/'
+            _use_if(param_ensemble, False, "--mesh-file"),
+            _tag_n_use_if(
+                param_ensemble, False, 'hurricanes/{tag}/mesh/mesh_w_bdry.grd'
             ),
-            _use_if_ensemble_equals(False, "--station-location-file"),
-            _fill_in_n_use_if_ensemble_equals(
-                False, 'hurricanes/{tag}/setup/stations.csv'
+            _use_if(param_ensemble, False, "--domain-bbox-file"),
+            _tag_n_use_if(
+                param_ensemble, False, 'hurricanes/{tag}/mesh/domain_box/'
             ),
-            _use_if_ensemble_equals(False, "--out"),
-            _fill_in_n_use_if_ensemble_equals(
-                False, 'hurricanes/{tag}/setup/schism.dir/'
+            _use_if(param_ensemble, False, "--station-location-file"),
+            _tag_n_use_if(
+                param_ensemble, False, 'hurricanes/{tag}/setup/stations.csv'
             ),
-            _use_if_paramwind_true_ensemble_false("--track-file"),
-            _fill_in_n_use_if_paramwind_true_ensemble_false(
-                'hurricanes/{tag}/nhc_track/hurricane-track.dat',
+            _use_if(param_ensemble, False, "--out"),
+            _tag_n_use_if(
+                param_ensemble, False, 'hurricanes/{tag}/setup/schism.dir/'
             ),
-            _use_if_ensemble_equals(False, "--cache-dir"),
-            _use_if_ensemble_equals(False, 'cache'),
-            _use_if_ensemble_equals(False, "--nwm-dir"),
-            _use_if_ensemble_equals(False, 'nwm'),
+            _use_if_and(
+                param_use_parametric_wind, True, param_ensemble, False,
+                value="--track-file"
+            ),
+            _tag_n_use_if_and(
+                param_use_parametric_wind, True, param_ensemble, False,
+                template='hurricanes/{tag}/nhc_track/hurricane-track.dat',
+            ),
+            _use_if(param_ensemble, False, "--cache-dir"),
+            _use_if(param_ensemble, False, 'cache'),
+            _use_if(param_ensemble, False, "--nwm-dir"),
+            _use_if(param_ensemble, False, 'nwm'),
             # Command and arguments for ensemble run
-            _use_if_ensemble_equals(True, "setup_ensemble"),
-            _use_if_ensemble_equals(True, "--track-file"),
-            _fill_in_n_use_if_ensemble_equals(
-                True, 'hurricanes/{tag}/nhc_track/hurricane-track.dat',
+            _use_if(param_ensemble, True, "setup_ensemble"),
+            _use_if(param_ensemble, True, "--track-file"),
+            _tag_n_use_if(
+                param_ensemble, True, 'hurricanes/{tag}/nhc_track/hurricane-track.dat',
             ),
-            _use_if_ensemble_equals(True, "--output-directory"),
-            _fill_in_n_use_if_ensemble_equals(
-                True, 'hurricanes/{tag}/setup/ensemble.dir/'
+            _use_if(param_ensemble, True, "--output-directory"),
+            _tag_n_use_if(
+                param_ensemble, True, 'hurricanes/{tag}/setup/ensemble.dir/'
             ),
-            _use_if_ensemble_equals(True, "--num-perturbations"),
-            _use_if_ensemble_equals(True, param_ensemble_n_perturb),
-            _use_if_ensemble_equals(True, '--mesh-directory'),
-            _fill_in_n_use_if_ensemble_equals(
-                True, 'hurricanes/{tag}/mesh/'
+            _use_if(param_ensemble, True, "--num-perturbations"),
+            _use_if(param_ensemble, True, param_ensemble_n_perturb),
+            _use_if(param_ensemble, True, '--mesh-directory'),
+            _tag_n_use_if(
+                param_ensemble, True, 'hurricanes/{tag}/mesh/'
             ),
-            _use_if_ensemble_equals(True, "--sample-from-distribution"),
-#           _use_if_ensemble_equals(True, "--quadrature"),
-            _use_if_ensemble_equals(True, "--sample-rule"),
-            _use_if_ensemble_equals(True, param_ensemble_sample_rule),
-            _use_if_ensemble_equals(True, "--hours-before-landfall"),
-            _use_if_ensemble_equals(True, param_ensemble_hr_prelandfall),
-            _use_if_ensemble_equals(True, "--nwm-file"),
-            _use_if_ensemble_equals(
+            _use_if(param_ensemble, True, "--sample-from-distribution"),
+#           _use_if(param_ensemble, True, "--quadrature"),
+            _use_if(param_ensemble, True, "--sample-rule"),
+            _use_if(param_ensemble, True, param_ensemble_sample_rule),
+            _use_if(param_ensemble, True, "--hours-before-landfall"),
+            _use_if(param_ensemble, True, param_hr_prelandfall),
+            _use_if(param_ensemble, True, "--nwm-file"),
+            _use_if(param_ensemble, 
                 True,
                 "nwm/NWM_v2.0_channel_hydrofabric/nwm_v2_0_hydrofabric.gdb"
             ),
             # Common arguments
             "--date-range-file",
-            _fill_in_tag('hurricanes/{tag}/setup/dates.csv'),
+            _tag('hurricanes/{tag}/setup/dates.csv'),
             "--tpxo-dir", 'tpxo',
             param_storm_name, param_storm_year],
         "setup",
@@ -262,7 +277,7 @@ info_flow_ecs_task_details = {
     "viz-sta-html-aws": ECSTaskDetail(
         VIZ_CLUSTER, VIZ_TEMPLATE_ID, "odssm-post", "post", [
             param_storm_name, param_storm_year,
-            _fill_in_tag('hurricanes/{tag}/setup/schism.dir/'),
+            _tag('hurricanes/{tag}/setup/schism.dir/'),
             ],
         "visualization",
         20, 45, []),
@@ -270,9 +285,9 @@ info_flow_ecs_task_details = {
         SCHISM_CLUSTER, SCHISM_TEMPLATE_ID, "odssm-prep", "prep", [
             'combine_ensemble',
             '--ensemble-dir', 
-            _fill_in_tag('hurricanes/{tag}/setup/ensemble.dir/'),
+            _tag('hurricanes/{tag}/setup/ensemble.dir/'),
             '--tracks-dir', 
-            _fill_in_tag('hurricanes/{tag}/setup/ensemble.dir/track_files'),
+            _tag('hurricanes/{tag}/setup/ensemble.dir/track_files'),
             ],
         "Combine ensemble output files",
         60, 90, []),
@@ -280,9 +295,9 @@ info_flow_ecs_task_details = {
         SCHISM_CLUSTER, SCHISM_TEMPLATE_ID, "odssm-prep", "prep", [
             'analyze_ensemble',
             '--ensemble-dir', 
-            _fill_in_tag('hurricanes/{tag}/setup/ensemble.dir/'),
+            _tag('hurricanes/{tag}/setup/ensemble.dir/'),
             '--tracks-dir', 
-            _fill_in_tag('hurricanes/{tag}/setup/ensemble.dir/track_files'),
+            _tag('hurricanes/{tag}/setup/ensemble.dir/track_files'),
             ],
         "Analyze combined ensemble output",
         60, 90, []),

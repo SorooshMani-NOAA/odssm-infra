@@ -11,7 +11,8 @@ ENV GID $gid
 ENV HOME /home/$USER
 
 # Get necessary packages
-RUN apk update && apk upgrade
+RUN apk update && apk upgrade && apk add \
+    git
 
 # New user
 RUN adduser --disabled-password --gecos "Non-root user" --uid $UID --home $HOME $USER
@@ -34,12 +35,16 @@ RUN conda install mamba -n base -c conda-forge && \
     mamba env create --prefix $ENV_PREFIX --file /tmp/environment.yml --force && \
     mamba clean --all --yes
 
-RUN conda run -p $ENV_PREFIX --no-capture-output \
-    pip install StormEvents==2.0.0
+RUN git clone https://github.com/oceanmodeling/stormevents && \
+    git -C stormevents checkout 2ebcc72 && \
+    conda run -p $ENV_PREFIX --no-capture-output \
+        pip install ./stormevents && \
+    rm -rf stormevents
 
 ENV CONDA_DIR /opt/conda
 
 RUN conda clean --all
+RUN apk del git
 
 RUN mkdir -p $PROJECT_DIR/scripts
 COPY docker/hurricane_data.py ${PROJECT_DIR}/scripts/
