@@ -54,6 +54,7 @@ def main(args):
     nwm_file = args.nwm_file
     mesh_dir = args.mesh_directory
     use_wwm = args.use_wwm
+    with_hydrology = args.with_hydrology
 
     workdir = out_dir
     mesh_file = mesh_dir / 'mesh_w_bdry.grd'
@@ -72,15 +73,16 @@ def main(args):
     forcing_configurations.append(TidalForcingJSON(
             resource=tpxo_dir / 'h_tpxo9.v1.nc',
             tidal_source=TidalSource.TPXO))
-    forcing_configurations.append(
-        NationalWaterModelFocringJSON(
-            resource=nwm_file,
-            cache=True,
-            source_json=workdir / 'source.json',
-            sink_json=workdir / 'sink.json',
-            pairing_hgrid=mesh_file
+    if with_hydrology:
+        forcing_configurations.append(
+            NationalWaterModelFocringJSON(
+                resource=nwm_file,
+                cache=True,
+                source_json=workdir / 'source.json',
+                sink_json=workdir / 'sink.json',
+                pairing_hgrid=mesh_file
+            )
         )
-    )
 
 
     platform = Platform.LOCAL
@@ -212,7 +214,8 @@ def main(args):
         'parallel': True
     })
 
-    _fix_nwm_issue(workdir)
+    if with_hydrology:
+        _fix_nwm_issue(workdir)
     if use_wwm:
         wwm.setup_wwm(mesh_file, workdir, ensemble=True)
 
@@ -254,7 +257,6 @@ def parse_arguments():
     )
     argument_parser.add_argument(
         "--nwm-file",
-        required=True,
         type=Path,
         help="path to the NWM hydrofabric dataset",
     )
@@ -275,6 +277,9 @@ def parse_arguments():
     )
     argument_parser.add_argument(
         "--use-wwm", action="store_true"
+    )
+    argument_parser.add_argument(
+        "--with-hydrology", action="store_true"
     )
 
     argument_parser.add_argument(

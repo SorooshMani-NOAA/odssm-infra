@@ -19,6 +19,7 @@ def main(args):
     dt_rng_path = args.date_range_file
     nwm_file = args.nwm_file
     mesh_dir = args.mesh_directory
+    with_hydrology = args.with_hydrology
 
     workdir = out_dir
     mesh_file = mesh_dir / 'mesh_w_bdry.grd'
@@ -32,22 +33,26 @@ def main(args):
     model_end_time = datetime.strptime(date_2, "%Y%m%d%H")
     spinup_time = timedelta(days=2)
 
-    # Trigger NWM data caching
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # NOTE: The output of write is not important. Calling
-        # `write` results in the relevant files being cached!
-        nwm = NWM(nwm_file=nwm_file, cache=True)
-        nwm.write(
-            output_directory=tmpdir,
-            gr3=Hgrid.open(mesh_file, crs=4326),
-            start_date=model_start_time - spinup_time,
-            end_date=model_end_time - model_start_time + spinup_time,
-            overwrite=True,
+    # Right now the only download is for NWM, in the future there
+    # might be more!
+
+    if with_hydrology:
+        # Trigger NWM data caching
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # NOTE: The output of write is not important. Calling
+            # `write` results in the relevant files being cached!
+            nwm = NWM(nwm_file=nwm_file, cache=True)
+            nwm.write(
+                output_directory=tmpdir,
+                gr3=Hgrid.open(mesh_file, crs=4326),
+                start_date=model_start_time - spinup_time,
+                end_date=model_end_time - model_start_time + spinup_time,
+                overwrite=True,
+                )
+            nwm.pairings.save_json(
+                sources=workdir / 'source.json',
+                sinks=workdir / 'sink.json'
             )
-        nwm.pairings.save_json(
-            sources=workdir / 'source.json',
-            sinks=workdir / 'sink.json'
-        )
 
 
 def parse_arguments():
@@ -68,7 +73,6 @@ def parse_arguments():
     )
     argument_parser.add_argument(
         "--nwm-file",
-        required=True,
         type=Path,
         help="path to the NWM hydrofabric dataset",
     )
@@ -77,6 +81,9 @@ def parse_arguments():
         type=Path,
         required=True,
         help='path to input mesh (`hgrid.gr3`, `manning.gr3` or `drag.gr3`)',
+    )
+    argument_parser.add_argument(
+        "--with-hydrology", action="store_true"
     )
 
     args = argument_parser.parse_args()
