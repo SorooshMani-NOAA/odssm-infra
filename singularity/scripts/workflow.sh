@@ -68,11 +68,14 @@ sbatch --wait --export=ALL,MESH_KWDS,STORM=$storm,YEAR=$year,IMG=$L_IMG_DIR/ocsm
 
 
 echo "Download necessary data..."
+DOWNLOAD_KWDS=""
+if [ $hydrology == 1 ]; then DOWNLOAD_KWDS+=" --with-hydrology"; fi
 singularity run $SINGULARITY_BINDFLAGS $L_IMG_DIR/prep.sif download_data \
     --output-directory $run_dir/setup/ensemble.dir/ \
     --mesh-directory $run_dir/mesh/ \
     --date-range-file $run_dir/setup/dates.csv \
-    --nwm-file $L_NWM_DATASET
+    --nwm-file $L_NWM_DATASET \
+    $DOWNLOAD_KWDS
 
 
 echo "Setting up the model..."
