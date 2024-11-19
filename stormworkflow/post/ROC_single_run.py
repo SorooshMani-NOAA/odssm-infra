@@ -123,19 +123,22 @@ def main(args):
     prob_nc_path = Path(args.prob_nc_path)
     obs_df_path = Path(args.obs_df_path)
     save_dir = args.save_dir
+    plot_prob_map = args.plot_prob_map
 
     # *.nc file coordinates
-    thresholds_ft = [3, 6, 9]  # in ft
+    thresholds_ft = [3, 4, 5, 6, 9]  # in ft
     thresholds_m = [round(i * 0.3048, 4) for i in thresholds_ft]  # convert to meter
     sources = ['model', 'surrogate']
-    probabilities = [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    probabilities = list(
+        np.linspace(0, 1, 101)
+    )  # [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
     # attributes of input files
     prediction_variable = 'probabilities'
     obs_attribute = 'Elev_m_xGEOID20b'
 
     # search criteria
-    max_distance = 1000  # [in meters] to set distance_upper_bound
+    max_distance = 1500  # [in meters] to set distance_upper_bound
     max_neighbors = 10  # to set k
 
     blank_arr = np.empty((len(thresholds_ft), 1, 1, len(sources), len(probabilities)))
@@ -182,16 +185,17 @@ def main(args):
             df_obs_storm[f'{source}_prob'] = prediction_prob
 
             # Plot probabilities at obs. points
-            plot_probabilities(
-                df_obs_storm,
-                f'{source}_prob',
-                gdf_countries,
-                f'Probability of {source} exceeding {thresholds_ft[threshold_count]} ft \n {storm_name}, {storm_year}, {leadtime}-hr leadtime',
-                os.path.join(
-                    save_dir,
-                    f'prob_{source}_above_{thresholds_ft[threshold_count]}ft_{storm_name}_{storm_year}_{leadtime}-hr.png',
-                ),
-            )
+            if plot_prob_map:
+                plot_probabilities(
+                    df_obs_storm,
+                    f'{source}_prob',
+                    gdf_countries,
+                    f'Probability of {source} exceeding {thresholds_ft[threshold_count]} ft \n {storm_name}, {storm_year}, {leadtime}-hr leadtime',
+                    os.path.join(
+                        save_dir,
+                        f'prob_{source}_above_{thresholds_ft[threshold_count]}ft_{storm_name}_{storm_year}_{leadtime}-hr.png',
+                    ),
+                )
 
             # Loop through probabilities: calculate hit/miss/... & POD/FAR
             prob_count = -1
@@ -237,8 +241,8 @@ def main(args):
     )
 
     # plot ROC curves
-    marker_list = ['s', 'x']
-    linestyle_list = ['dashed', 'dotted']
+    marker_list = ['s', '.']
+    linestyle_list = ['dotted', '-']
     threshold_count = -1
     for threshold in thresholds_ft:
         threshold_count += 1
@@ -250,24 +254,51 @@ def main(args):
         source_count = -1
         for source in sources:
             source_count += 1
+            AUC = abs(
+                np.trapz(
+                    POD_arr[threshold_count, 0, 0, source_count, :],
+                    x=FAR_arr[threshold_count, 0, 0, source_count, :],
+                )
+            )
             plt.plot(
                 FAR_arr[threshold_count, 0, 0, source_count, :],
                 POD_arr[threshold_count, 0, 0, source_count, :],
-                label=f'{source}',
+                label=f'{source}, AUC={AUC:.2f}',
                 marker=marker_list[source_count],
                 linestyle=linestyle_list[source_count],
                 markersize=5,
             )
-        plt.legend()
-        plt.xlabel('False Alarm Rate')
-        plt.ylabel('Probability of Detection')
+
+            best_res = (
+                POD_arr[threshold_count, 0, 0, source_count, :]
+                - FAR_arr[threshold_count, 0, 0, source_count, :]
+            ).argmax()
+            if source == 'surrogate':
+                plt.plot(
+                    FAR_arr[threshold_count, 0, 0, source_count, best_res],
+                    POD_arr[threshold_count, 0, 0, source_count, best_res],
+                    'k.',
+                )
+                plt.text(
+                    FAR_arr[threshold_count, 0, 0, source_count, best_res],
+                    POD_arr[threshold_count, 0, 0, source_count, best_res],
+                    f'p({probabilities[best_res]})',
+                )
+        plt.legend(loc='lower right')
+        npos = int(hit_arr[threshold_count, 0, 0, 0, 0])
+        nneg = int(false_alarm_arr[threshold_count, 0, 0, 0, 0])
+        plt.xlabel(f'False Alarm Rate, N={nneg}')
+        plt.ylabel(f'Probability of Detection, N={npos}')
+        plt.xlim([-0.01, 1.01])
+        plt.ylim([-0.01, 1.01])
+        plt.grid(True)
 
         plt.title(
-            f'{storm_name}_{storm_year}, {leadtime}-hr leadtime, {threshold} ft threshold'
+            f'{storm_name}_{storm_year}, {leadtime}-hr leadtime, {threshold} ft threshold: N={len(df_obs_storm)}'
         )
         plt.savefig(
             os.path.join(
-                save_dir, f'ROC_{storm_name}_{leadtime}hr_leadtime_{threshold}_ft.png'
+                save_dir, f'ROC_{storm_name}_{storm_year}_{leadtime}hr_leadtime_{threshold}_ft.png'
             )
         )
         plt.close()
@@ -289,6 +320,13 @@ def cli():
     # optional
     parser.add_argument(
         '--save_dir', help='directory for saving analysis', default=os.getcwd(), type=str
+    )
+
+    parser.add_argument(
+        '--plot_prob_map',
+        help='plot the prediction probability at observations maps',
+        default=True,
+        action=argparse.BooleanOptionalAction,
     )
 
     main(parser.parse_args())
