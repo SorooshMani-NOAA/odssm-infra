@@ -298,7 +298,60 @@ def main(args):
         )
         plt.savefig(
             os.path.join(
-                save_dir, f'ROC_{storm_name}_{storm_year}_{leadtime}hr_leadtime_{threshold}_ft.png'
+                save_dir,
+                f'ROC_{storm_name}_{storm_year}_{leadtime}hr_leadtime_{threshold}_ft.png',
+            )
+        )
+        plt.close()
+
+    # plot TS curves
+    marker_list = ['s', '.']
+    linestyle_list = ['dotted', '-']
+    threshold_count = -1
+    for threshold in thresholds_ft:
+        threshold_count += 1
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        source_count = -1
+        for source in sources:
+            source_count += 1
+            # TS = hits / (hits + misses + false alarms)
+            TS = hit_arr[threshold_count, 0, 0, source_count, :] / (
+                hit_arr[threshold_count, 0, 0, source_count, :]
+                + miss_arr[threshold_count, 0, 0, source_count, :]
+                + false_alarm_arr[threshold_count, 0, 0, source_count, :]
+            )
+
+            plt.plot(
+                probabilities,
+                TS,
+                label=f'{source}',
+                marker=marker_list[source_count],
+                linestyle=linestyle_list[source_count],
+                markersize=5,
+            )
+            best_res = TS.argmax()
+            if source == 'surrogate':
+                plt.plot(
+                    probabilities[best_res], TS[best_res], 'k.',
+                )
+                plt.text(
+                    probabilities[best_res], TS[best_res], f'p({probabilities[best_res]})',
+                )
+        plt.legend(loc='upper right')
+        plt.ylabel(f'Threat Score')
+        plt.xlabel(f'probability of exceedance')
+        plt.xlim([-0.01, 1.01])
+        plt.ylim([-0.01, 1.01])
+        plt.grid(True)
+
+        plt.title(
+            f'{storm_name}_{storm_year}, {leadtime}-hr leadtime, {threshold} ft threshold: N={len(df_obs_storm)}'
+        )
+        plt.savefig(
+            os.path.join(
+                save_dir,
+                f'TS_{storm_name}_{storm_year}_{leadtime}hr_leadtime_{threshold}_ft.png',
             )
         )
         plt.close()
